@@ -76,9 +76,9 @@ export default function AdminDashboard() {
   const handleDownload = async (endpoint, filename) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:5000${endpoint}`, {
+      const response = await fetch(`http://${window.location.hostname}:5000${endpoint}`, {
         headers: { 'Authorization': `Bearer ${token}` }
-      });
+        });
       
       if (!response.ok) throw new Error('Download failed');
       
