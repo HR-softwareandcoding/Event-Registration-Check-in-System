@@ -95,11 +95,24 @@ db.serialize(() => {
     });
   });
 
+  db.run(`CREATE TABLE IF NOT EXISTS venues (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE
+  )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT,
-    date TEXT,
-    venue_id INTEGER
+    title TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    date TEXT NOT NULL,
+    venue_id INTEGER NOT NULL,
+    FOREIGN KEY(venue_id) REFERENCES venues(id)
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    date TEXT NOT NULL,
+    venue_id INTEGER NOT NULL
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS registrations (
@@ -170,6 +183,45 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
+//change password
+app.put('/api/auth/change-password', verifyJWT, (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+
+  db.get('SELECT * FROM users WHERE id = ?', [req.user.id], (err, user) => {
+    if (err || !user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!bcrypt.compareSync(currentPassword, user.password)) {
+      logger.warn(`Failed password change attempt for user: ${user.username}`);
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const hashedNewPassword = bcrypt.hashSync(newPassword, 10);
+    db.run(
+      'UPDATE users SET password = ? WHERE id = ?',
+      [hashedNewPassword, req.user.id],
+      function (updateErr) {
+        if (updateErr) {
+          logger.error(`Error updating password for ${user.username}: ${updateErr.message}`);
+          return res.status(500).json({ error: 'Failed to update password' });
+        }
+
+        logger.info(`Password changed successfully for user: ${user.username}`);
+        res.json({ message: 'Password updated successfully' });
+      }
+    );
+  });
+});
+
 /**
  * @swagger
  * /api/users:
@@ -213,6 +265,36 @@ app.post('/api/users', verifyJWT, verifyAdmin, (req, res) => {
       }
       logger.info(`Admin ${req.user.username} created new user: ${username} (${role})`);
       res.status(201).json({ message: 'User created successfully', userId: this.lastID });
+    }
+  );
+});
+
+// --- VENUE ROUTES ---
+app.get('/api/venues', verifyJWT, (req, res) => {
+  db.all(`SELECT * FROM venues ORDER BY id ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: 'Failed to fetch venues' });
+    res.json(rows);
+  });
+});
+
+app.post('/api/venues', verifyJWT, verifyAdmin, (req, res) => {
+  const { id, name } = req.body;
+  const trimmedName = name ? name.trim() : '';
+
+  if (id === undefined || id === null || id === '' || !trimmedName) {
+    return res.status(400).json({ error: 'Venue ID and Venue Name are required' });
+  }
+
+  db.run(
+    `INSERT INTO venues (id, name) VALUES (?, ?)`,
+    [parseInt(id, 10), trimmedName],
+    function (err) {
+      if (err) {
+        logger.error('Error creating venue: ' + err.message);
+        return res.status(400).json({ error: 'Venue ID or Venue Name already exists' });
+      }
+      logger.info(`Admin ${req.user.username} created venue ${id}: ${trimmedName}`);
+      res.status(201).json({ message: 'Venue created successfully', venueId: parseInt(id, 10) });
     }
   );
 });
@@ -262,17 +344,61 @@ app.get('/api/events', verifyJWT, (req, res) => {
  */
 app.post('/api/events', verifyJWT, verifyAdmin, (req, res) => {
   const { title, date, venue_id } = req.body;
-  if (!title || !date) return res.status(400).json({ error: 'Title and date are required' });
+  const trimmedTitle = title ? title.trim() : '';
 
-  db.run(
-    `INSERT INTO events (title, date, venue_id) VALUES (?, ?, ?)`,
-    [title, date, venue_id || null],
-    function (err) {
-      if (err) return res.status(500).json({ error: 'Failed to create event' });
-      logger.info(`Admin ${req.user.username} created event ID ${this.lastID}: ${title}`);
-      res.status(201).json({ message: 'Event created successfully', eventId: this.lastID });
+  if (!trimmedTitle || !date || venue_id === undefined || venue_id === null || venue_id === '') {
+    return res.status(400).json({ error: 'Title, date, and Venue ID are required' });
+  }
+
+  // Case-insensitive duplicate title check
+  db.get(`SELECT id FROM events WHERE LOWER(title) = LOWER(?)`, [trimmedTitle], (checkErr, existingEvent) => {
+    if (checkErr) {
+      return res.status(500).json({ error: 'Database error checking event title' });
     }
-  );
+    if (existingEvent) {
+      return res.status(400).json({ error: 'An event with this name already exists' });
+    }
+
+    db.run(
+      `INSERT INTO events (title, date, venue_id) VALUES (?, ?, ?)`,
+      [trimmedTitle, date, parseInt(venue_id, 10)],
+      function (err) {
+        if (err) {
+          logger.error('Error creating event: ' + err.message);
+          return res.status(400).json({ error: 'Event name already exists or invalid data' });
+        }
+        logger.info(`Admin ${req.user.username} created event ID ${this.lastID}: ${trimmedTitle} (Venue: ${venue_id})`);
+        res.status(201).json({ message: 'Event created successfully', eventId: this.lastID });
+      }
+    );
+  });
+});
+
+// Get full admin overview of all events and their attendees
+app.get('/api/admin/overview', verifyJWT, verifyAdmin, (req, res) => {
+  const query = `
+    SELECT 
+      e.id AS event_id,
+      e.title AS event_title,
+      e.date AS event_date,
+      e.venue_id,
+      v.name AS venue_name,
+      r.id AS registration_id,
+      r.email AS guest_email,
+      r.checked_in
+    FROM events e
+    LEFT JOIN venues v ON e.venue_id = v.id
+    LEFT JOIN registrations r ON e.id = r.event_id
+    ORDER BY e.date DESC, e.id DESC, r.email ASC
+  `;
+
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      logger.error('Failed to fetch admin overview: ' + err.message);
+      return res.status(500).json({ error: 'Failed to fetch event and attendee overview' });
+    }
+    res.json(rows);
+  });
 });
 
 // --- REGISTRATION & CHECK-IN ROUTES ---

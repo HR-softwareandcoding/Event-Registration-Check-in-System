@@ -1,3 +1,4 @@
+import ChangePasswordForm from '../components/ChangePasswordForm';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import API from '../api';
@@ -91,7 +92,7 @@ export default function CheckInPortal() {
   };
 
   return (
-    <div style={{ maxWidth: '900px', margin: '2rem auto', padding: '2rem' }}>
+      <div style={{ maxWidth: '900px', margin: '2rem auto', padding: '2rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h2>Guest Check-in & Registration Portal ({username})</h2>
         <div>
@@ -210,6 +211,8 @@ export default function CheckInPortal() {
           </div>
         </>
       )}
+      <ChangePasswordForm />
     </div>
+
   );
 }
